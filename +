@@ -1,0 +1,14 @@
+*
+!*.*
+!.gitignore
+!*/
+!AUTHORS
+!LICENSE
+!Makefile
+!*-solution*
+!*.cpp
+*-snippets*
+*.o
+*.ppm
+.DS_Store
+*~
