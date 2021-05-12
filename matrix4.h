@@ -57,6 +57,10 @@ class Matrix4 {
         }
     }
 
+    Cvec3 getBasis(int i) {
+        return Cvec3((*this)(0,i),(*this)(1,i),(*this)(2,i));
+    }
+
     Matrix4 &operator+=(const Matrix4 &m) {
         for (int i = 0; i < 16; ++i) {
             d_[i] += m.d_[i];

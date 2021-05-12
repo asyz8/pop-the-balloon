@@ -22,6 +22,10 @@ void SgTransformNode::removeChild(shared_ptr<SgNode> child) {
     children_.erase(find(children_.begin(), children_.end(), child));
 }
 
+void SgTransformNode::clearChild() {
+    children_.clear();
+}
+
 bool SgShapeNode::accept(SgNodeVisitor &visitor) {
     if (!visitor.visit(*this))
         return false;

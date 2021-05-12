@@ -60,9 +60,15 @@ static const float g_frustMinFov = 60.0; // A minimal of 60 degree field of view
 static float g_frustFovY = g_frustMinFov; // FOV in y direction (updated by updateFrustFovY)
 
 static const float g_frustNear = -0.1;  // near plane
-static const float g_frustFar = -50.0;  // far plane
+static const float g_frustFar = -100.0;  // far plane
 static const float g_groundY = -2.0;    // y coordinate of the ground
-static const float g_groundSize = 10.0; // half the ground length
+static const float g_ceilY = 20.0;      // y coordinate of the ceiling
+static const float g_roomWidth = 20.0;
+static const float g_roomDepth = 1.5 * g_roomWidth;
+static const float g_movementBuffer = 1.0; // skyNode always maintains this distance to the walls of the room
+static const float g_lineZ = g_roomDepth/4; // you must start before (z>g_lineZ) this line
+static const float g_roomMinDim = min(2*g_roomWidth, min(2*g_roomDepth, g_ceilY-g_groundY)),
+    g_roomMaxDim = max(2*g_roomWidth, max(2*g_roomDepth, g_ceilY-g_groundY));
 
 static GLFWwindow* g_window;
 
@@ -78,70 +84,65 @@ static bool g_mouseLClickButton, g_mouseRClickButton, g_mouseMClickButton;
 static bool g_spaceDown = false; // space state, for middle mouse emulation
 static bool g_pickingMode = false;
 static double g_mouseClickX, g_mouseClickY; // coordinates for mouse click event
-static bool g_shellNeedsUpdate = true;
+
 // --------- Materials
-static shared_ptr<Material> g_redDiffuseMat,
-                            g_blueDiffuseMat,
-                            g_bumpFloorMat,
-                            g_arcballMat,
-                            g_pickingMat,
-                            g_lightMat,
-                            g_bunnyMat;
+static shared_ptr<Material> g_goldDiffuseMat, g_blueDiffuseMat, g_arrowDiffuseMat,
+    g_bumpFloorMat, g_arcballMat, g_pickingMat, g_lightMat, g_transMat;
+static const Cvec3f gold = Cvec3f(165./255, 124./255, 0./255), blue = Cvec3f(1./255, 1./255, 136./255),
+    red = Cvec3f(179./255, 33./255, 19./255);
 
 shared_ptr<Material> g_overridingMaterial;
 static vector<shared_ptr<Material>> g_bunnyShellMats; // for bunny shells
 
 // --------- Scene nodes
-static shared_ptr<SgTransformNode> g_world, g_groundNode, g_activeEyeNode; 
-static shared_ptr<SgRbtNode> g_skyNode, g_robot1Node, g_robot2Node,
-    g_light1Node, g_light2Node, g_currentPickedRbtNode, g_bunnyNode;
+static shared_ptr<SgTransformNode> g_world, g_groundNode, g_activeEyeNode, g_screenNode, g_arrowEyeNode; 
+static shared_ptr<SgRbtNode> g_skyNode, g_arrowNode, g_light1Node, g_light2Node, g_currentPickedRbtNode;
+static list<shared_ptr<SgRbtNode>> g_balloonNodes;
+static vector<Cvec3> g_balloonVelocity; // in world coordinates
 
-
-static list<vector<RigTForm>> g_keyFrames;
-static list<vector<RigTForm>>::iterator g_currentKeyFrame = g_keyFrames.begin();
-static vector<shared_ptr<SgRbtNode>> g_rbtNodes;
-static int g_currentKeyFrameNumber = -1;
-static string g_frameFileName = "animation.txt";
-static ofstream g_oFrameFile;
-static ifstream g_iFrameFile;
 static bool g_skyCameraOrbit = true;
-
-// Frames to render per second
-static int g_framesPerSecond = 60;
-// 2 seconds between keyframes
-static int g_msBetweenKeyFrames = 2000;
-static int g_msBetweenKeyFramesInc = 100, g_msBetweenKeyFramesMin = 100, g_msBetweenKeyFramesMax = 10000;
 
 // Is the animation playing?
 static bool g_playingAnimation = false;
 // Time since last key frame
 static int g_animateTime = 0;
 static double g_lastFrameClock;
+static const double g_framesPerSecond = 60;
 
 // --------- Geometry
 typedef SgGeometryShapeNode MyShapeNode;
 
 // Vertex buffer and index buffer associated with the ground and cube geometry
 static shared_ptr<Geometry> g_ground, g_cube, g_sphere;
-static const int g_numShells = 24; // constants defining how many layers of shells
-static double g_furHeight = 0.21;
-static double g_hairyness = 0.7;
 
-static shared_ptr<SimpleGeometryPN> g_bunnyGeometry;
-static vector<shared_ptr<SimpleGeometryPNX>> g_bunnyShellGeometries;
-static Mesh g_bunnyMesh;
+static bool g_print = true; // for testing only
+
+// -------- For the game
 
 // Global variables for used physical simulation
 static const Cvec3 g_gravity(0, -0.5, 0); // gavity vector
 static double g_timeStep = 0.02;
 static double g_numStepsPerFrame = 10;
-static double g_damping = 0.96;
-static double g_stiffness = 4;
-static int g_simulationsPerSecond = 60;
 
-static std::vector<Cvec3>
-    g_tipPos,      // should be hair tip pos in world-space coordinates
-    g_tipVelocity; // should be hair tip velocity in world-space coordinates
+// Game status and statistics
+static int g_scorePerPop = 10;
+static int g_currScore = 0;
+
+static float g_arrowWidth = .3;
+static float g_arrowWidthMax = g_roomDepth*.03, g_arrowWidthMin = 0.1;
+static float g_arrowLength = g_arrowWidth*10;
+static Cvec3 g_arrowVelocity(0,0,0);
+static bool g_arrowLock = false;
+static bool g_arrowSetPower = false;
+static float g_arrowPower = 0.0;
+
+static float g_balloonRadius = 2.0;
+static bool g_balloonMoving = false;
+static float g_balloonVelocityScale = 5.0;
+static const float g_balloonVelocityMin = 0.1, g_balloonVelocityMax = min(60.0, g_roomMinDim/g_timeStep);
+static const float g_incrementRatio = 1.2;
+
+
 
 ///////////////// END OF G L O B A L S
 /////////////////////////////////////////////////////
@@ -154,7 +155,7 @@ static void initGround() {
     vector<VertexPNTBX> vtx(vbLen);
     vector<unsigned short> idx(ibLen);
 
-    makePlane(g_groundSize*2, vtx.begin(), idx.begin());
+    makePlane(g_roomMaxDim, vtx.begin(), idx.begin());
     g_ground.reset(new SimpleIndexedGeometryPNTBX(&vtx[0], &idx[0], vbLen, ibLen));
 }
 
@@ -181,121 +182,126 @@ static void initSphere() {
     g_sphere.reset(new SimpleIndexedGeometryPNTBX(&vtx[0], &idx[0], vtx.size(), idx.size()));
 }
 
-static Cvec3 coordConvert(Cvec3 p, RigTForm& worldToBunny, bool toWorldCoord = true) {
-    return Cvec3((toWorldCoord ? worldToBunny : inv(worldToBunny))*Cvec4(p,1));
+static Cvec3 coordConvert(Cvec3 p, RigTForm& worldToObject, bool toWorldCoord = true, float translate = 1.) {
+    return Cvec3((toWorldCoord ? worldToObject : inv(worldToObject))*Cvec4(p,translate));
 }
 
-// finds s in world coordinates
-static Cvec3 findMeshRestPos(const Mesh::Vertex& v, RigTForm& worldToBunny) {
-    Cvec3 pos = v.getPosition() + v.getNormal() * g_furHeight;
-    return coordConvert(pos, worldToBunny);
+static Cvec3 limitMotion(RigTForm& L, RigTForm worldToObject = RigTForm(), 
+    float buffer = g_movementBuffer,
+    float zmin = -g_roomDepth, float zmax = g_roomDepth,
+    float xmin = -g_roomWidth, float xmax = g_roomWidth, 
+    float ymin = g_groundY, float ymax = g_ceilY) {
+    Cvec3 t = coordConvert(L.getTranslation(), worldToObject);
+    t[0] = clamp((float)t[0], xmin+buffer, xmax-buffer);
+    t[1] = clamp((float)t[1], ymin+buffer, ymax-buffer);
+    t[2] = clamp((float)t[2], zmin+buffer, zmax-buffer);
+    L.setTranslation(coordConvert(t, worldToObject, false));
+    return L.getTranslation();
 }
 
-static void initBunnyMeshes() {
-    g_bunnyMesh.load("bunny.mesh");
-
-    // Init the per vertex normal of g_bunnyMesh
-    int numVert = g_bunnyMesh.getNumVertices(), numFace = g_bunnyMesh.getNumFaces();
-
-    for (int i = 0; i < numVert; ++i) {
-        const Mesh::Vertex v = g_bunnyMesh.getVertex(i);
-        Mesh::VertexIterator it(v.getIterator()), it0(it);
-        Cvec3 norm; 
-        do {
-            norm += it.getFace().getNormal();
-        } while(++it != it0);
-        v.setNormal(norm.normalize());
-    }
-
-    // cout << "Vertex normal set!" << endl; cout.flush(); 
-
-    // Initialize g_bunnyGeometry from g_bunnyMesh
-    // cout << "num vertices should be" << (numFace*3) << endl;
-    vector<VertexPN> vertices;
-    for (int i = 0; i < numFace; i++) {
-        const Mesh::Face f = g_bunnyMesh.getFace(i);
-        for (int j = 0; j < f.getNumVertices(); j++) {
-            const Mesh::Vertex v = f.getVertex(j);
-            vertices.push_back(VertexPN(v.getPosition(), v.getNormal()));
-        }
-    }
-    g_bunnyGeometry.reset(new SimpleGeometryPN(&vertices[0], vertices.size()));
-
-    // Now allocate array of SimpleGeometryPNX to for shells, one per layer
-    g_bunnyShellGeometries.resize(g_numShells);
-    for (int i = 0; i < g_numShells; ++i) {
-        g_bunnyShellGeometries[i].reset(new SimpleGeometryPNX());
-    }
+static float angleBetween(Cvec3 v1, Cvec3 v2) {
+    if ((norm(v1) > CS175_EPS) && (norm(v2) > CS175_EPS))
+        return acos(dot(v1,v2)/norm(v1)/norm(v2));
+    else
+        return 0;
 }
 
-// Specifying shell geometries based on g_tipPos, g_furHeight, and g_numShells.
-// You need to call this function whenver the shell needs to be updated
-static void updateShellGeometry() {
-    // TASK 1 and 3 TODO: finish this function as part of Task 1 and Task 3
-    g_shellNeedsUpdate = false;
-    RigTForm worldToBunny = getPathAccumRbt(g_world, g_bunnyNode);
-    int numVert = g_bunnyMesh.getNumVertices(), numFace = g_bunnyMesh.getNumFaces();
+static void printCvec3(Cvec3 p) {
+    cout << " " << p[0] << " " << p[1] << " " << p[2] << endl;
+}
 
-    if (g_tipPos.empty()) {
-        for (int i = 0; i < numVert; i++) {
-            const Mesh::Vertex v = g_bunnyMesh.getVertex(i);
-            g_tipPos.push_back(findMeshRestPos(v, worldToBunny));
-            g_tipVelocity.push_back(Cvec3());
-        }
+static Cvec3 getBasis(Quat q, int i) {
+  return quatToMatrix(q).getBasis(i);
+}
+
+static list<shared_ptr<SgRbtNode>>::iterator popBalloon(
+    list<shared_ptr<SgRbtNode>>::iterator balloon,
+    vector<Cvec3>::iterator balloonVelocity) {
+    g_world->removeChild(*balloon);
+    g_currScore += g_scorePerPop;
+    cout << "Pop! Current score " << g_currScore << endl;
+    g_balloonVelocity.erase(balloonVelocity);
+    return g_balloonNodes.erase(balloon);
+}
+
+static bool hitWall(Cvec3 p, double tol = g_arrowWidth/2) {
+    return ((p[0] < -g_roomWidth + tol) || (p[0] > g_roomWidth - tol) 
+        || (p[1] < g_groundY + tol) || (p[1] > g_ceilY - tol) 
+        || (p[2] < -g_roomDepth + tol) || (p[2] > g_roomDepth - tol) );
+}
+
+static void rescaleArrow() {
+    g_arrowNode->clearChild();
+    g_arrowLength = g_arrowWidth * 10;
+    g_arrowNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_cube, g_blueDiffuseMat, Cvec3(0, 0, 0), Cvec3(0,0,0), 
+            Cvec3(g_arrowWidth/2, g_arrowWidth/2, g_arrowLength))));
+    g_arrowNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_sphere, g_blueDiffuseMat, Cvec3(0, 0, -g_arrowLength/2), Cvec3(0,0,0), 
+            Cvec3(g_arrowWidth/2, g_arrowWidth/2, g_arrowWidth/2))));
+    g_arrowEyeNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0,g_arrowWidth/2,-g_arrowLength/2))));
+    g_arrowNode->addChild(g_arrowEyeNode);
+}
+
+static void resetScene() {
+    if (g_arrowEyeNode) {
+        g_arrowNode->removeChild(g_arrowEyeNode);
+        g_world->removeChild(g_skyNode);
+        g_world->removeChild(g_arrowNode);
     }
+    g_skyNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0, (g_ceilY+g_groundY)/2, g_roomDepth-g_movementBuffer))));
+    g_activeEyeNode = g_skyNode;
+    g_arrowNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0, (g_ceilY+g_groundY)/2, (g_lineZ + g_roomDepth)/2),
+        Quat(cos(0/8),Cvec3(0,1,0)*sin(0/8)))));
+    rescaleArrow();
 
-    vector<Cvec3> p, n, d;
-    Cvec3 localTip;
-    double shellHeight = g_furHeight / g_numShells, mscale = 2.0 / g_numShells / (g_numShells - 1);
-    for (int i = 0; i < numVert; i++) {
-        const Mesh::Vertex v = g_bunnyMesh.getVertex(i);
-        localTip = coordConvert(g_tipPos[i], worldToBunny, false);
-        d.push_back((localTip - v.getPosition() - v.getNormal() * g_furHeight) * mscale);
-        p.push_back(v.getPosition());
-        n.push_back(v.getNormal() * shellHeight);
+    g_world->addChild(g_arrowNode);
+    g_world->addChild(g_skyNode);
+    g_arrowVelocity = Cvec3(0,0,0);
+    g_arrowLock = false;
+    g_arrowPower = 0.0;
+}
+
+static void updateArrow() {
+    if (norm(g_arrowVelocity) < CS175_EPS)
+        return;
+    RigTForm worldToArrow = getPathAccumRbt(g_world, g_arrowNode, 1);
+    RigTForm L = getPathAccumRbt(g_world, g_arrowNode);
+    Cvec3 p = coordConvert(L.getTranslation(), worldToArrow); // arrow COM location in world coordinates
+    p = p + g_arrowVelocity * g_timeStep;
+    float theta = angleBetween(g_arrowVelocity, g_arrowVelocity + g_gravity * g_timeStep);
+    Cvec3 k = coordConvert(Cvec3(-g_arrowVelocity[2],0,g_arrowVelocity[0]), L, false, 0);
+    if (theta > CS175_EPS) {
+        k.normalize();
+    } else {
+        theta = 0;
+        k = Cvec3(1,0,0);
     }
-
-    vector<Cvec2> t = {Cvec2(0,0), Cvec2(g_hairyness,0), Cvec2(0,g_hairyness)};
-    vector<VertexPNX> vertices;
-    for (int s = 0; s < g_numShells; ++s) {
-        vertices.clear();
-        for(int i = 0; i < numVert; i++) {
-            p[i] += n[i];
-            n[i] += d[i];
+    g_arrowVelocity = g_arrowVelocity + g_gravity * g_timeStep;
+    g_arrowNode->setRbt(RigTForm(coordConvert(p, worldToArrow, false), 
+        inv(worldToArrow.getRotation())*L.getRotation()*Quat(cos(theta/2),k*sin(-theta/2))));
+    g_world->removeChild(g_groundNode);
+    g_world->addChild(g_groundNode);
+    L = getPathAccumRbt(g_world, g_arrowNode);
+    Cvec3 s = coordConvert(Cvec3(0,0,-g_arrowLength/2), L); // arrow tip location in world coordinates
+    // Verify that veloc vector = arrow vector in direction
+    // cout << "veloc vector "; printCvec3(g_arrowVelocity/norm(g_arrowVelocity));
+    // cout << "arrow vector "; printCvec3(s-p);
+    auto it2 = g_balloonVelocity.begin();
+    for(auto it = g_balloonNodes.begin(), end = g_balloonNodes.end(); it != end; it++) {
+        if (norm2(s - ((*it)->getRbt()).getTranslation()) < g_balloonRadius*g_balloonRadius) {
+            it = popBalloon(it, it2);
         }
-        for (int i = 0; i < g_bunnyMesh.getNumFaces(); i++) {
-            const Mesh::Face f = g_bunnyMesh.getFace(i);
-            for (int j = 0; j < f.getNumVertices(); j++) {
-                const int vi = f.getVertex(j).getIndex();
-                vertices.push_back(VertexPNX(p[vi], n[vi], t[j]));
-            }
-        }
-        g_bunnyShellGeometries[s]->upload(&vertices[0], vertices.size());
+        it2++;
+    }
+    s += g_arrowVelocity * g_timeStep;
+    if (hitWall(s)) {
+        cout << "Arrow hits wall. Your total is "<< g_currScore << endl;
+        cout << "Resetting arrow in 3s..." << endl;
+        sleep(3);
+        resetScene();
     }
     
-}
-
-// New function to update the simulation every frame
-static void hairsSimulationUpdate() {
-    // TASK 2 TODO: write dynamics simulation code here
-    g_shellNeedsUpdate = true;
-    int numVert = g_bunnyMesh.getNumVertices(), numFace = g_bunnyMesh.getNumFaces();
-    
-    RigTForm worldToBunny = getPathAccumRbt(g_world, g_bunnyNode);
-
-    Cvec3 p,s;
-    for (int i = 0; i < numVert; i++) {
-        const Mesh::Vertex v = g_bunnyMesh.getVertex(i);
-        p = coordConvert(v.getPosition(), worldToBunny);
-        s = coordConvert(v.getPosition() + 
-            v.getNormal() * g_furHeight, worldToBunny);
-        for (int t = 0; t < g_numStepsPerFrame; t++) {
-            Cvec3 force = g_gravity + (s - g_tipPos[i]) * g_stiffness;
-            g_tipPos[i] = g_tipPos[i] + g_tipVelocity[i] * g_timeStep;
-            g_tipPos[i] = p + (g_tipPos[i] - p).normalize() * g_furHeight;
-            g_tipVelocity[i] = (g_tipVelocity[i] + force * g_timeStep) * g_damping;
-        }
-    }    
 }
 
 // takes a projection matrix and send to the the shaders
@@ -325,12 +331,9 @@ static Matrix4 makeProjectionMatrix() {
 static void updateActiveEye() {
     cout << "Active eye is ";
     if (g_activeEyeNode == g_skyNode) {
-        g_activeEyeNode = g_robot1Node;
-        cout << "Object 1" << endl;
-    } else if (g_activeEyeNode == g_robot1Node) {
-        g_activeEyeNode = g_robot2Node;
-        cout << "Object 2" << endl;
-    } else if (g_activeEyeNode == g_robot2Node) {
+        g_activeEyeNode = g_arrowEyeNode;
+        cout << "Arrow" << endl;
+    } else if (g_activeEyeNode == g_arrowEyeNode) {
         g_activeEyeNode = g_skyNode;
         cout << "Sky" << endl;
     }
@@ -338,6 +341,91 @@ static void updateActiveEye() {
 
 static RigTForm getEyeRbt() {
     return (getPathAccumRbt(g_world, g_activeEyeNode));
+}
+
+// -------- Game
+
+static double randomRange(float lo = -1.0, float hi = 1.0) {
+    return(static_cast <double> (lo + (hi-lo) * rand()/RAND_MAX));
+}
+
+static Cvec3 randomCvec3(float scale=1.0) {
+    float theta = randomRange(0,CS175_PI);
+    float phi = randomRange(0,CS175_PI*2);
+    return Cvec3(sin(theta)*cos(phi), sin(theta)*sin(phi), cos(theta))*scale;
+}
+
+static void generateBalloon(int n = 1, bool randomLoc = true) {
+    shared_ptr<SgRbtNode> balloon;
+    Cvec3 loc;
+    for (int i = 0; i < n; i++) {
+        loc = randomLoc ? Cvec3(
+            randomRange(-g_roomWidth+g_balloonRadius,  g_roomWidth-g_balloonRadius), 
+            randomRange(g_groundY+g_balloonRadius,    g_ceilY-g_balloonRadius), 
+            randomRange(-g_roomDepth+g_balloonRadius,  g_lineZ-g_balloonRadius)) : Cvec3(0.0, g_groundY+g_balloonRadius, g_lineZ-g_balloonRadius);
+        balloon.reset(new SgRbtNode(RigTForm(loc)));
+        balloon->addChild(shared_ptr<MyShapeNode>(new MyShapeNode(g_sphere, g_goldDiffuseMat, 
+            Cvec3(0, 0, 0), Cvec3(0, 0, 0), Cvec3(g_balloonRadius, g_balloonRadius, g_balloonRadius))));
+        g_world->removeChild(g_groundNode);
+        g_world->addChild(balloon);
+        g_world->addChild(g_groundNode);
+        g_balloonNodes.push_back(balloon);
+        g_balloonVelocity.push_back(randomCvec3());
+    }
+}
+
+static void resizeBalloon() {
+    int i = g_balloonNodes.size();
+    RigTForm L;
+    for(auto it = g_balloonNodes.begin(); i > 0; i--, it++) {
+        RigTForm L = (*it)->getRbt();
+        (*it)->clearChild();
+        (*it)->addChild(shared_ptr<MyShapeNode>(new MyShapeNode(g_sphere, g_goldDiffuseMat, 
+            Cvec3(0, 0, 0), Cvec3(0,0,0), Cvec3(g_balloonRadius, g_balloonRadius, g_balloonRadius))));
+        limitMotion(L, getPathAccumRbt(g_world,*it,1), g_balloonRadius, -g_roomDepth, g_lineZ);
+        (*it)->setRbt(L);
+    }
+    cout << "Balloon resized. New radius: " << g_balloonRadius << endl;
+}
+
+static RigTForm updateBalloon(RigTForm L, Cvec3& vel) {
+    Cvec3 pos = L.getTranslation();
+    pos += vel * g_timeStep * g_balloonVelocityScale;
+    if (pos[0]-g_balloonRadius < -g_roomWidth) {
+        pos[0] = -2*g_roomWidth-(pos[0]-g_balloonRadius)+g_balloonRadius;
+        vel[0] = -vel[0];
+    } else if (pos[0]+g_balloonRadius > g_roomWidth) {
+        pos[0] = 2*g_roomWidth-(pos[0]+g_balloonRadius)-g_balloonRadius;
+        vel[0] = -vel[0];
+    }
+
+    if (pos[1]-g_balloonRadius < g_groundY) {
+        pos[1] = 2*g_groundY-(pos[1]-g_balloonRadius)+g_balloonRadius;
+        vel[1] = -vel[1];
+    } else if (pos[1]+g_balloonRadius > g_ceilY) {
+        pos[1] = 2*g_ceilY-(pos[1]+g_balloonRadius)-g_balloonRadius;
+        vel[1] = -vel[1];
+    }
+
+    if (pos[2]-g_balloonRadius < -g_roomDepth) {
+        pos[2] = -2*g_roomDepth-(pos[2]-g_balloonRadius)+g_balloonRadius;
+        vel[2] = -vel[2];
+    } else if (pos[2]+g_balloonRadius > g_lineZ) {
+        pos[2] = 2*g_lineZ-(pos[2]+g_balloonRadius)-g_balloonRadius;
+        vel[2] = -vel[2];
+    }
+    L.setTranslation(pos);
+    return L;
+} 
+
+static void updateBalloons() {
+    if (g_balloonMoving) {
+        vector<Cvec3>::iterator it2 = g_balloonVelocity.begin();
+        for(auto it = g_balloonNodes.begin(), end = g_balloonNodes.end(); it != end; it++) {
+            (*it)->setRbt(updateBalloon((*it)->getRbt(), *it2));
+            it2++;
+        }
+    }
 }
 
 // ------- Arcball
@@ -353,122 +441,6 @@ static void updateArcballScale() {
     double z = getArcballCenter()[2];
     g_arcballScale = ((z < -CS175_EPS) ? 
         getScreenToEyeScale(z, g_frustFovY, g_windowHeight) : .01);
-}
-
-
-// ------ Frames
-static void initFrame() {
-    dumpSgRbtNodes(g_world, g_rbtNodes);
-}
-
-// load current key frame to scene graph if such exists
-static void loadFrame(bool keyFrameToScene = true) {
-    if (g_keyFrames.empty()) {
-        return;
-    }
-    vector<RigTForm>::iterator iter2 = g_currentKeyFrame->begin();
-    for (vector<shared_ptr<SgRbtNode>>::iterator iter = g_rbtNodes.begin(), 
-        end = g_rbtNodes.end(); iter != end; ++iter) {
-        if (keyFrameToScene) 
-            (*iter)->setRbt(*iter2);
-        else {
-            (*iter2) = (*iter) -> getRbt();
-        }
-        iter2++;
-    }
-}
-
-// create a vector that stores the current scene graph
-static vector<RigTForm> makeFrame() {
-    vector<RigTForm> frame;
-    for (vector<shared_ptr<SgRbtNode>>::iterator iter = g_rbtNodes.begin(), 
-        end = g_rbtNodes.end(); iter != end; ++iter) {
-        frame.push_back((*iter)->getRbt());
-    }
-    return frame;
-}
-
-static void createFrame() {
-    if (!g_keyFrames.empty()) {
-        g_currentKeyFrame++;
-    }
-    g_currentKeyFrameNumber++;
-    g_keyFrames.insert(g_currentKeyFrame, makeFrame());
-    g_currentKeyFrame--;
-    cout << "Create new frame [" << g_currentKeyFrameNumber << "]" << endl;
-}
-
-// For computing d and e
-static RigTForm bezierInterpolate3(RigTForm c0, RigTForm c1, RigTForm c2, double alpha) {
-    RigTForm rbt;
-    rbt.setTranslation((c2.getTranslation() - c0.getTranslation())*alpha 
-        + c1.getTranslation());
-    rbt.setRotation((((c2.getRotation())
-        *inv(c0.getRotation()))^alpha)*(c1.getRotation()));
-    return rbt;
-}
-
-// For computing other interpolations
-static RigTForm bezierInterpolate(RigTForm c0, RigTForm c1, double alpha) {
-    return bezierInterpolate3(c0, c0, c1, alpha);
-}
-
-static RigTForm catmullRom(vector<RigTForm>::iterator c0, RigTForm d0,
-    RigTForm e0, vector<RigTForm>::iterator c1, double alpha) {
-    RigTForm f = bezierInterpolate(*c0, d0, alpha);
-    RigTForm g = bezierInterpolate(d0, e0, alpha);
-    RigTForm h = bezierInterpolate(e0, *c1, alpha);
-    RigTForm m = bezierInterpolate(f, g, alpha);
-    RigTForm n = bezierInterpolate(g, h, alpha);
-    return bezierInterpolate(m, n, alpha);
-}
-
-// we use g_currentKeyFrame to keep track of last frame before the current interpolation
-bool interpolate(double t) {
-    if (t >= g_currentKeyFrameNumber) {
-        g_currentKeyFrame++; 
-        g_currentKeyFrameNumber++;
-    }
-    if (g_currentKeyFrameNumber >= (g_keyFrames.size() - 2)) {
-        return true;
-    }
-    static list<vector<RigTForm>>::iterator nextFrame, pprevFrame, nnextFrame;
-    nextFrame = g_currentKeyFrame; nextFrame++;
-    pprevFrame = g_currentKeyFrame; pprevFrame--;
-    nnextFrame = nextFrame; nnextFrame++;
-    double alpha = t - floor(t);
-    vector<shared_ptr<SgRbtNode>>::iterator sceneRbt = g_rbtNodes.begin();
-    for(vector<RigTForm>::iterator c0 = g_currentKeyFrame->begin(), c00 = pprevFrame->begin(), 
-        c1 = nextFrame->begin(), c11 = nnextFrame->begin(), end = g_currentKeyFrame->end(); 
-        c0 != end; c0++, c1++, c00++, c11++) {
-        RigTForm d = bezierInterpolate3(*c00, *c0, *c1, 1./6), 
-            e = bezierInterpolate3(*c0, *c1, *c11, -1./6);
-        (*sceneRbt) -> setRbt(catmullRom(c0,d,e,c1,alpha));
-        sceneRbt++;
-    }
-    return false;
-}
-
-void endAnimation() {
-    cout << "Finished playing animation..." << endl;
-    g_playingAnimation = false;
-    g_animateTime = 0;
-    g_currentKeyFrame = g_keyFrames.end();
-    g_currentKeyFrame--; g_currentKeyFrame--;
-    g_currentKeyFrameNumber = g_keyFrames.size()-2;
-    loadFrame();
-    cout << "Now at frame [" << g_currentKeyFrameNumber << "]" << endl;
-}
-
-void animationUpdate() {
-    if (g_playingAnimation) {
-        bool endReached = interpolate((float) g_animateTime / g_msBetweenKeyFrames);
-        if (!endReached)
-            g_animateTime += 1000./g_framesPerSecond;
-        else {
-            endAnimation();
-        }
-    }
 }
 
 static void drawStuff(bool picking = false) {
@@ -492,16 +464,12 @@ static void drawStuff(bool picking = false) {
     uniforms.put("uLight", eyeLight1);
     uniforms.put("uLight2", eyeLight2);
 
-    if (g_shellNeedsUpdate) {
-        updateShellGeometry();
-    }
-
     if (!picking) {
         Drawer drawer(invEyeRbt, uniforms);
         g_world->accept(drawer);
 
         // draw spheres
-        if (g_currentPickedRbtNode) {
+        if (g_currentPickedRbtNode && !g_arrowSetPower)  {
             Matrix4 MVM = rigTFormToMatrix(invEyeRbt * getPathAccumRbt(g_world, g_currentPickedRbtNode));
             MVM = MVM * Matrix4::makeScale(Cvec3(g_arcballScale * g_arcballScreenRadius));
             Matrix4 NMVM = normalMatrix(MVM);
@@ -528,8 +496,12 @@ static void drawStuff(bool picking = false) {
         g_currentPickedRbtNode = picker.getRbtNodeAtXY(g_mouseClickX * g_wScale,
                                                        g_mouseClickY * g_hScale);
 
-        if (g_currentPickedRbtNode == g_groundNode)
+        if ((g_currentPickedRbtNode != g_light1Node) && (g_currentPickedRbtNode != g_light2Node) && (g_currentPickedRbtNode != g_arrowNode))
             g_currentPickedRbtNode = shared_ptr<SgRbtNode>();   // set to NULL
+        if ((g_currentPickedRbtNode == g_arrowNode) && g_arrowLock) {
+            g_currentPickedRbtNode = shared_ptr<SgRbtNode>();
+            cout << "Cannot manipulate arrow after it is launched" << endl;
+        }
         if (g_currentPickedRbtNode) {
             cout << "Part picked" << endl;
         } else {
@@ -560,42 +532,6 @@ static void pick() {
     checkGlErrors();
 }
 
-static void updateWHScale() {
-    int screen_width, screen_height, pixel_width, pixel_height;
-    glfwGetWindowSize(g_window, &screen_width, &screen_height);
-    glfwGetFramebufferSize(g_window, &pixel_width, &pixel_height);
-    g_wScale = pixel_width / screen_width;
-    g_hScale = pixel_height / screen_height;
-    cout << g_wScale << " " << g_hScale << endl;
-
-    // cout << screen_width << " " << screen_height << endl;
-    // cout << pixel_width << " " << pixel_width << endl;
-}
-
-static void display() {
-    // No more glUseProgram
-
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    drawStuff(false); // no more curSS
-
-    glfwSwapBuffers(g_window);
-
-    checkGlErrors();
-}
-
-static void reshape(GLFWwindow * window, const int w, const int h) {
-    int width, height;
-    glfwGetFramebufferSize(g_window, &width, &height); 
-    glViewport(0, 0, width, height);
-    g_arcballScreenRadius = .25 * min(g_windowWidth, g_windowHeight);
-    g_windowWidth = w;
-    g_windowHeight = h;
-    cerr << "Size of window is now " << g_windowWidth << "x" << g_windowHeight << endl;
-   //set arcball radius here 
-   updateFrustFovY();
-}
-
 static Cvec3 findArcballQuat(double x, double y, Cvec3 center) {
     Cvec2 arcballScreenCenter = getScreenSpaceCoord(center, makeProjectionMatrix(), 
                 g_frustNear, g_frustFovY, g_windowWidth, g_windowHeight);
@@ -614,6 +550,45 @@ static RigTForm findArcballRbt(double dx, double dy, Cvec3 center) {
     Cvec3 v1 = findArcballQuat(g_mouseClickX, g_mouseClickY, center);
     Cvec3 v2 = findArcballQuat(g_mouseClickX + dx, g_mouseClickY + dy, center);
     return RigTForm(Quat(0.,v2) * Quat(0.,-v1));
+}
+
+
+// -------- Display 
+
+static void updateWHScale() {
+    int screen_width, screen_height, pixel_width, pixel_height;
+    glfwGetWindowSize(g_window, &screen_width, &screen_height);
+    glfwGetFramebufferSize(g_window, &pixel_width, &pixel_height);
+    g_wScale = pixel_width / screen_width;
+    g_hScale = pixel_height / screen_height;
+    cout << g_wScale << " " << g_hScale << endl;
+
+    // cout << screen_width << " " << screen_height << endl;
+    // cout << pixel_width << " " << pixel_width << endl;
+}
+
+static void display() {
+    // No more glUseProgram
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    drawStuff(false); // no more curSS
+
+    glfwSwapBuffers(g_window);
+
+    checkGlErrors();
+}
+
+
+static void reshape(GLFWwindow * window, const int w, const int h) {
+    int width, height;
+    glfwGetFramebufferSize(g_window, &width, &height); 
+    glViewport(0, 0, width, height);
+    g_arcballScreenRadius = .25 * min(g_windowWidth, g_windowHeight);
+    g_windowWidth = w;
+    g_windowHeight = h;
+    cerr << "Size of window is now " << g_windowWidth << "x" << g_windowHeight << endl;
+   //set arcball radius here 
+   updateFrustFovY();
 }
 
 static RigTForm getM(const double dx, const double dy) {
@@ -653,41 +628,53 @@ static void motion(GLFWwindow *window, double x, double y) {
     // when object = view = cube, cannot rotate but can translate 
     // in intuitive direction, i.e. reversed
     const RigTForm m = getM(dx, dy);
-    if (g_currentPickedRbtNode) { // manipulate object 
-        RigTForm L = g_currentPickedRbtNode -> getRbt();
-        RigTForm CL = getPathAccumRbt(g_world,g_currentPickedRbtNode);
-        const RigTForm A = transFact(CL) * linFact(getEyeRbt());
-        const RigTForm S_inv = inv(getPathAccumRbt(g_world,g_currentPickedRbtNode,1));
-        const RigTForm As = S_inv * A;
-        if (g_mouseLClickButton && !g_mouseRClickButton && !g_spaceDown) { // rotate
-            const RigTForm my = getM(dx, 0);
-            const RigTForm mx = getM(0, dy);
-            const RigTForm B = transFact(CL);
-            const RigTForm Bs = S_inv * B;
-            L = doMtoOwrtA(mx, L, As);
-            L = doMtoOwrtA(my, L, Bs);
-        } else {
-            L = doMtoOwrtA(m, L, As);
-        }
-        g_currentPickedRbtNode -> setRbt(L);
-    } else if (g_activeEyeNode == g_skyNode) {
-        RigTForm L = g_skyNode -> getRbt();
-        if (g_mouseLClickButton && !g_mouseRClickButton && !g_spaceDown) {
-            const RigTForm mx = RigTForm(Quat::makeXRotation(dy));
-            const RigTForm my = RigTForm(Quat::makeYRotation(-dx));
-            if (g_skyCameraOrbit) {
-                // orbit around world's origin
-                L = my * L;
-                L = doMtoOwrtA(mx, L, linFact(L));
+    if (g_mouseClickDown) {
+        if (g_currentPickedRbtNode) { // manipulate object 
+            if (g_arrowSetPower) {
+                g_arrowPower = max(0.0, g_arrowPower -dy*.01);
             } else {
-                // ego motion
-                L = doMtoOwrtA(my, L, transFact(L)) * mx;
+                RigTForm L = g_currentPickedRbtNode -> getRbt();
+                RigTForm CL1 = getPathAccumRbt(g_world,g_currentPickedRbtNode, 1);
+                RigTForm CL = CL1 * L;
+                const RigTForm A = transFact(CL) * linFact(getEyeRbt());
+                const RigTForm S_inv = inv(getPathAccumRbt(g_world,g_currentPickedRbtNode,1));
+                const RigTForm As = S_inv * A;
+                if (g_mouseLClickButton && !g_mouseRClickButton && !g_spaceDown) { // rotate
+                    const RigTForm my = getM(dx, 0);
+                    const RigTForm mx = getM(0, dy);
+                    const RigTForm B = transFact(CL);
+                    const RigTForm Bs = S_inv * B;
+                    L = doMtoOwrtA(mx, L, As);
+                    L = doMtoOwrtA(my, L, Bs);
+                } else { // translate
+                    L = doMtoOwrtA(m, L, As);
+                }
+                Cvec3 t = (CL1 * L).getTranslation();
+                limitMotion(L, CL1, (g_currentPickedRbtNode == g_arrowNode) ? 
+                    g_arrowLength : g_movementBuffer, g_lineZ);
+                g_currentPickedRbtNode -> setRbt(L);
             }
-        } else {
-            L = L * inv(m);
+        } else { // manipulate sky
+            RigTForm L = g_skyNode -> getRbt();
+            if (g_mouseLClickButton && !g_mouseRClickButton && !g_spaceDown) {
+                const RigTForm mx = RigTForm(Quat::makeXRotation(dy));
+                const RigTForm my = RigTForm(Quat::makeYRotation(-dx));
+                if (g_skyCameraOrbit) {
+                    // orbit around world's origin
+                    L = my * L;
+                    L = doMtoOwrtA(mx, L, linFact(L));
+                } else {
+                    // ego motion
+                    L = doMtoOwrtA(my, L, transFact(L)) * mx;
+                }
+            } else {
+                L = L * inv(m);
+            }
+            limitMotion(L);
+            g_skyNode -> setRbt(L);
         }
-        g_skyNode -> setRbt(L);
     }
+    
 
     g_mouseClickX = x;
     g_mouseClickY = g_windowHeight - y - 1;
@@ -755,10 +742,91 @@ static void keyboard(GLFWwindow* window, int key, int scancode, int action, int 
             cout << " frame" << endl;
             break;
         case GLFW_KEY_P:
-            g_pickingMode = true;
-            cout << "Picking mode is on" << endl;
+            if (g_arrowSetPower) {
+                cout << "Picking mode unavailable when setting arrow power" << endl;
+            } else {
+                g_pickingMode = true;
+                cout << "Picking mode is on" << endl;
+            }
             break;
-        case GLFW_KEY_C:
+        case GLFW_KEY_G:
+            generateBalloon();
+            cout << "New balloon generated. # Balloons = " << g_balloonNodes.size() << endl;
+            break;
+        case GLFW_KEY_F:
+            generateBalloon(20);
+            cout << "New balloons generated. # Balloons = " << g_balloonNodes.size() << endl;
+            break;
+        case GLFW_KEY_R:
+            resetScene();
+            cout << "Arrow and sky node reset." << endl;
+            break;
+        case GLFW_KEY_L:
+            cout << "Prepare for launch! Drag down to boost launch power, or drag up to reduce it." << endl;
+            g_arrowPower = 0.0;
+            g_arrowLock = true;
+            g_arrowSetPower = true;
+            g_currentPickedRbtNode = g_arrowNode;
+            break;
+        case GLFW_KEY_A:
+            if (g_arrowPower > CS175_EPS) {
+                cout << "... and arrow launched! Let's see how this one goes" << endl;
+                g_arrowVelocity = -rigTFormToMatrix(getPathAccumRbt(g_world,g_arrowNode)).getBasis(2).normalize()*g_arrowPower;
+                g_arrowSetPower = false;
+                g_currentPickedRbtNode = shared_ptr<SgRbtNode>();
+            } else {
+                cout << "Your arrow has no power. Press [L] and drag to adjust power" << endl;
+            }
+            break;
+        case GLFW_KEY_N:
+            cout << "Balloon " << (g_balloonMoving ? "paused" : "moving") << endl;
+            g_balloonMoving = not g_balloonMoving;
+            break;
+        case GLFW_KEY_UP:
+            if (g_balloonRadius * g_incrementRatio < g_roomMinDim/2) {
+                g_balloonRadius *= g_incrementRatio;
+                resizeBalloon();
+            } else
+                cout << "Max balloon size reached" << endl;
+            break;
+        case GLFW_KEY_DOWN:
+            if (g_balloonRadius > g_incrementRatio * g_arrowWidth) {
+                g_balloonRadius /= g_incrementRatio;
+                resizeBalloon();
+            } else
+                cout << "Min balloon size reached" << endl;
+            break;
+        case GLFW_KEY_RIGHT:
+            if (g_balloonVelocityScale*g_incrementRatio < g_balloonVelocityMax) {
+                g_balloonVelocityScale *= g_incrementRatio;
+                cout << "Balloon velocity: " << g_balloonVelocityScale << endl;
+            } else
+                cout << "Max balloon velocity reached" << endl;
+            break;
+        case GLFW_KEY_LEFT:
+            if (g_balloonVelocityScale > g_balloonVelocityMin*g_incrementRatio) {
+                g_balloonVelocityScale /= g_incrementRatio;
+                cout << "Balloon velocity: " << g_balloonVelocityScale << endl;
+            } else
+                cout << "Min balloon velocity reached" << endl;
+            break;
+        case GLFW_KEY_EQUAL: // <
+            if (g_arrowWidth*g_incrementRatio < g_arrowWidthMax) {
+                g_arrowWidth *= g_incrementRatio;
+                cout << "Arrow width: " << g_arrowWidth << endl;
+                rescaleArrow();
+            } else
+                cout << "Max arrow width reached" << endl;
+            break;
+        case GLFW_KEY_MINUS: // <
+            if (g_arrowWidth > g_arrowWidthMin*g_incrementRatio) {
+                g_arrowWidth /= g_incrementRatio;
+                cout << "Arrow width: " << g_arrowWidth << endl;
+                rescaleArrow();
+            } else
+                cout << "Min arrow width reached" << endl;
+            break;
+        /*case GLFW_KEY_C:
             if (g_playingAnimation)
                 cout << "Cannot operate when playing animation" << endl;
             else if (g_keyFrames.empty()) {
@@ -955,7 +1023,7 @@ static void keyboard(GLFWwindow* window, int key, int scancode, int action, int 
             g_hairyness /= 1.05;
             cerr << "hairyness = " << g_hairyness << std::endl;
             updateShellGeometry();
-            break;
+            break;*/
         }
     } else {
         switch (key) {
@@ -981,7 +1049,7 @@ static void initGlfwState() {
     glfwWindowHint(GLFW_SRGB_CAPABLE, GL_TRUE);
 
     g_window = glfwCreateWindow(g_windowWidth, g_windowHeight,
-                                "Assignment 9", NULL, NULL);
+                                "Pop the Balloons!", NULL, NULL);
     if (!g_window) {
         fprintf(stderr, "Failed to create GLFW window or OpenGL context\n");
         exit(1);
@@ -1012,6 +1080,8 @@ static void initGLState() {
     glReadBuffer(GL_BACK);
     if (!g_Gl2Compatible)
         glEnable(GL_FRAMEBUFFER_SRGB);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 }
 
 static void initMaterials() {
@@ -1020,8 +1090,8 @@ static void initMaterials() {
     Material solid("./shaders/basic-gl3.vshader", "./shaders/solid-gl3.fshader");
 
     // copy diffuse prototype and set red color
-    g_redDiffuseMat.reset(new Material(diffuse));
-    g_redDiffuseMat->getUniforms().put("uColor", Cvec3f(165./255, 124./255, 0./255));
+    g_goldDiffuseMat.reset(new Material(diffuse));
+    g_goldDiffuseMat->getUniforms().put("uColor", Cvec3f(165./255, 124./255, 0./255));
 
     // copy diffuse prototype and set blue color
     g_blueDiffuseMat.reset(new Material(diffuse));
@@ -1044,42 +1114,10 @@ static void initMaterials() {
     // pick shader
     g_pickingMat.reset(new Material("./shaders/basic-gl3.vshader", "./shaders/pick-gl3.fshader"));
 
-    // bunny material
-    g_bunnyMat.reset(new Material("./shaders/basic-gl3.vshader",
-                                  "./shaders/bunny-gl3.fshader"));
-    g_bunnyMat->getUniforms().put("uColorAmbient", Cvec3f(0.45f, 0.3f, 0.3f))
-                             .put("uColorDiffuse", Cvec3f(0.2f, 0.2f, 0.2f));
-
-    // bunny shell materials;
-    // common shell texture:
-    shared_ptr<ImageTexture> shellTexture(new ImageTexture("shell.ppm", false));
-
-    // enable repeating of texture coordinates
-    shellTexture->bind();
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-
-    // eachy layer of the shell uses a different material, though the materials
-    // will share the same shader files and some common uniforms. hence we
-    // create a prototype here, and will copy from the prototype later
-    Material bunnyShellMatPrototype("./shaders/bunny-shell-gl3.vshader",
-                                    "./shaders/bunny-shell-gl3.fshader");
-    bunnyShellMatPrototype.getUniforms().put("uTexShell", shellTexture);
-    bunnyShellMatPrototype.getRenderStates()
-        .blendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA) // set blending mode
-        .enable(GL_BLEND)                                // enable blending
-        .disable(GL_CULL_FACE);                          // disable culling
-
-    // allocate array of materials
-    g_bunnyShellMats.resize(g_numShells);
-    for (int i = 0; i < g_numShells; ++i) {
-        // copy prototype
-        g_bunnyShellMats[i].reset(new Material(bunnyShellMatPrototype));
-        // but set a different exponent for blending transparency
-        g_bunnyShellMats[i]->getUniforms().put(
-            "uAlphaExponent", 2.f + 5.f * float(i + 1) / g_numShells);
-    }
+    // transparent screen shader
+    g_transMat.reset(new Material("./shaders/basic-gl3.vshader", "./shaders/transparent-gl3.fshader"));
+    g_transMat->getUniforms().put("uColor", Cvec4f(0.50f, 0.f, 0.f, 0.2f));
+    // g_transMat->getUniforms().put("uAlpha", 0.0f);
 };
 
 
@@ -1087,122 +1125,44 @@ static void initGeometry() {
     initGround();
     initCubes();
     initSphere();
-    initBunnyMeshes();
-}
-
-static void constructRobot(shared_ptr<SgTransformNode> base, shared_ptr<Material> material) {
-
-    const float ARM_LEN = 0.7, LEG_LEN = 1.0, NECK_LEN = 0.2, 
-                ARM_THICK = 0.25, LEG_THICK = 0.35, 
-                TORSO_LEN = 1.5, TORSO_THICK = 0.25, TORSO_WIDTH = 1,
-                HEAD_LEN = 0.4, HEAD_THICK = 0.4, HEAD_WIDTH = 0.4;
-    const int NUM_JOINTS = 10,
-              NUM_SHAPES = 10;
-
-    struct JointDesc {
-        int parent;
-        float x, y, z;
-    };
-
-    JointDesc jointDesc[NUM_JOINTS] = {
-        {-1}, // torso
-        {0,  TORSO_WIDTH/2, TORSO_LEN/2, 0}, // upper right arm
-        {1,  ARM_LEN, 0, 0}, // lower right arm
-        {0,  -TORSO_WIDTH/2, TORSO_LEN/2, 0}, // upper left arm
-        {3,  -ARM_LEN, 0, 0}, // lower left arm
-        {0,  0, NECK_LEN + TORSO_LEN/2, 0}, // head
-        {0,  TORSO_WIDTH/4, -TORSO_LEN/2, 0}, // upper right leg
-        {6,  0, -LEG_LEN, 0}, // lower right leg
-        {0,  -TORSO_WIDTH/4, -TORSO_LEN/2, 0}, // upper left leg
-        {8,  0, -LEG_LEN, 0}, // lower left leg
-    };
-
-    struct ShapeDesc {
-        int parentJointId;
-        float x, y, z, sx, sy, sz;
-        shared_ptr<Geometry> geometry;
-    };
-
-    ShapeDesc shapeDesc[NUM_SHAPES] = {
-        {0, 0,          0, 0, TORSO_WIDTH, TORSO_LEN, TORSO_THICK, g_cube}, // torso
-        {1, ARM_LEN/2,  0, 0, ARM_LEN/2, ARM_THICK/2, ARM_THICK/2, g_sphere}, // upper right arm
-        {2, ARM_LEN/2,  0, 0, ARM_LEN, ARM_THICK/2, ARM_THICK/2, g_cube}, // lower right arm
-        {3, -ARM_LEN/2, 0, 0, ARM_LEN/2, ARM_THICK/2, ARM_THICK/2, g_sphere}, // upper right arm
-        {4, -ARM_LEN/2, 0, 0, ARM_LEN, ARM_THICK/2, ARM_THICK/2, g_cube}, // lower right arm
-        {5, 0, HEAD_LEN, 0, HEAD_WIDTH, HEAD_LEN, HEAD_THICK, g_sphere}, // head
-        {6, 0, -LEG_LEN/2, 0, LEG_THICK/2, LEG_LEN/2, LEG_THICK/2, g_sphere}, // upper right leg
-        {7, 0, -LEG_LEN/2, 0, LEG_THICK/2, LEG_LEN, LEG_THICK/2, g_cube}, // lower right leg
-        {8, 0, -LEG_LEN/2, 0, LEG_THICK/2, LEG_LEN/2, LEG_THICK/2, g_sphere}, // upper left leg
-        {9, 0, -LEG_LEN/2, 0, LEG_THICK/2, LEG_LEN, LEG_THICK/2, g_cube}, // lower left leg 
-    };
-
-    shared_ptr<SgTransformNode> jointNodes[NUM_JOINTS];
-
-    for (int i = 0; i < NUM_JOINTS; ++i) {
-        if (jointDesc[i].parent == -1)
-            jointNodes[i] = base;
-        else {
-            jointNodes[i].reset(new SgRbtNode(RigTForm(Cvec3(jointDesc[i].x, jointDesc[i].y, jointDesc[i].z))));
-            jointNodes[jointDesc[i].parent]->addChild(jointNodes[i]);
-        }
-    }
-    for (int i = 0; i < NUM_SHAPES; ++i) {
-        shared_ptr<SgGeometryShapeNode> shape(
-            new MyShapeNode(shapeDesc[i].geometry,
-                            material, // USE MATERIAL as opposed to color
-                            Cvec3(shapeDesc[i].x, shapeDesc[i].y, shapeDesc[i].z),
-                            Cvec3(0, 0, 0),
-                            Cvec3(shapeDesc[i].sx, shapeDesc[i].sy, shapeDesc[i].sz)));
-        jointNodes[shapeDesc[i].parentJointId]->addChild(shape);
-    }
 }
 
 static void initScene() {
     g_world.reset(new SgRootNode());
-
-    g_skyNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0, 0.25, 10.0))));
-    g_activeEyeNode = g_skyNode;
+    resetScene();
+    g_balloonRadius = g_movementBuffer;
+    g_currScore = 0;
 
     g_groundNode.reset(new SgRbtNode());
     g_groundNode->addChild(shared_ptr<MyShapeNode>(
                                new MyShapeNode(g_ground, g_bumpFloorMat, Cvec3(0, g_groundY, 0))));
-    g_light1Node.reset(new SgRbtNode(RigTForm(Cvec3(6.0, 2.0, 12.0))));
+    g_groundNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_ground, g_bumpFloorMat, Cvec3(0, g_ceilY, 0), Cvec3(90, 90, 90))));
+    g_groundNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_ground, g_bumpFloorMat, Cvec3(-g_roomWidth, (g_ceilY+g_groundY)/2, 0), Cvec3(0, 0, -90))));
+    g_groundNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_ground, g_bumpFloorMat, Cvec3(g_roomWidth, (g_ceilY+g_groundY)/2, 0), Cvec3(0, 0, 90))));
+    g_groundNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_ground, g_bumpFloorMat, Cvec3(0, (g_ceilY+g_groundY)/2, -g_roomDepth), Cvec3(90, 0, 0))));
+    g_groundNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_ground, g_bumpFloorMat, Cvec3(0, (g_ceilY+g_groundY)/2, g_roomDepth), Cvec3(-90, 0, 0))));
+    g_groundNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_ground, g_transMat, Cvec3(0, (g_ceilY+g_groundY)/2, g_lineZ), Cvec3(90, 0, 0))));
+    g_groundNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_ground, g_transMat, Cvec3(0, (g_ceilY+g_groundY)/2, g_lineZ), Cvec3(-90, 0, 0))));
+    g_light1Node.reset(new SgRbtNode(RigTForm(Cvec3(-g_roomWidth+g_movementBuffer, g_ceilY-g_movementBuffer, g_lineZ+g_movementBuffer))));
     g_light1Node->addChild(shared_ptr<MyShapeNode>(
                                new MyShapeNode(g_sphere, g_lightMat, Cvec3(0, 0, 0))));
-
-    g_light2Node.reset(new SgRbtNode(RigTForm(Cvec3(-3.0, 2.0, -15.0))));
+    g_light2Node.reset(new SgRbtNode(RigTForm(Cvec3(g_roomWidth-g_movementBuffer, g_ceilY-g_movementBuffer, g_lineZ+g_movementBuffer))));
     g_light2Node->addChild(shared_ptr<MyShapeNode>(
                                new MyShapeNode(g_sphere, g_lightMat, Cvec3(0, 0, 0))));
-
-    g_robot1Node.reset(new SgRbtNode(RigTForm(Cvec3(-5, 1, 0))));
-    g_robot2Node.reset(new SgRbtNode(RigTForm(Cvec3(5, 1, 0))));
-
-    constructRobot(g_robot1Node, g_redDiffuseMat); // a Red robot
-    constructRobot(g_robot2Node, g_blueDiffuseMat); // a Blue robot
-
-    // create a single transform node for both the bunny and the bunny
-    // shells
-    g_bunnyNode.reset(new SgRbtNode());
-
-    // add bunny as a shape nodes
-    g_bunnyNode->addChild(
-        shared_ptr<MyShapeNode>(new MyShapeNode(g_bunnyGeometry, g_bunnyMat)));
-
-    // add each shell as shape node
-    for (int i = 0; i < g_numShells; ++i) {
-        g_bunnyNode->addChild(shared_ptr<MyShapeNode>(
-            new MyShapeNode(g_bunnyShellGeometries[i], g_bunnyShellMats[i])));
-    }
-    // from this point, calling g_bunnyShellGeometries[i]->upload(...) will
-    // change the geometry of the ith layer of shell that gets drawn
-
-    g_world->addChild(g_skyNode);
-    g_world->addChild(g_groundNode);
-    g_world->addChild(g_robot1Node);
-    g_world->addChild(g_robot2Node);
+    // g_balloonNode.reset(new SgRbtNode(RigTForm(Cvec3(0,0,0))));
+    // g_balloonNode->addChild(shared_ptr<MyShapeNode>(new MyShapeNode(g_sphere, g_goldDiffuseMat, Cvec3(0, 0, 0))));
+    
+    // g_world->addChild(g_balloonNode);
     g_world->addChild(g_light1Node);
     g_world->addChild(g_light2Node);
-    g_world->addChild(g_bunnyNode);
+    g_world->addChild(g_groundNode);
 }
 
 static void glfwLoop() {
@@ -1212,12 +1172,13 @@ static void glfwLoop() {
         double thisTime = glfwGetTime();
         if( thisTime - g_lastFrameClock >= 1. / g_framesPerSecond) {
 
-            animationUpdate();
-            hairsSimulationUpdate();
+            // animationUpdate();
+            // hairsSimulationUpdate();
+            updateArrow();
+            updateBalloons();
             display();
             g_lastFrameClock = thisTime;
         }
-
         glfwPollEvents();
     }
 }
@@ -1245,8 +1206,6 @@ int main(int argc, char *argv[]) {
         initMaterials();
         initGeometry();
         initScene();
-        initFrame();
-        updateShellGeometry();
 
         glfwLoop();
         return 0;

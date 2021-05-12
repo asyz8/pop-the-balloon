@@ -1,4 +1,4 @@
-BASE = asst9
+BASE = main
 
 all: $(BASE)
 
@@ -9,7 +9,7 @@ ifeq ($(OS), Linux)
 endif
 
 ifeq ($(OS), Darwin)
-  CPPFLAGS += -D__MAC__ -std=c++11 -stdlib=libc++
+  CPPFLAGS += -D__MAC__ -std=c++17 -stdlib=libc++
   LDFLAGS += -framework OpenGL -framework IOKit -framework Cocoa
   LIBS += -lglfw.3 -lGLEW
 endif

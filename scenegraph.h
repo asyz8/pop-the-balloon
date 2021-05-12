@@ -43,6 +43,7 @@ class SgTransformNode : public SgNode {
 
     void addChild(shared_ptr<SgNode> child);
     void removeChild(shared_ptr<SgNode> child);
+    void clearChild();
 
     int getNumChildren() const { return children_.size(); }
 
