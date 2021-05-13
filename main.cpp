@@ -86,16 +86,20 @@ static bool g_pickingMode = false;
 static double g_mouseClickX, g_mouseClickY; // coordinates for mouse click event
 
 // --------- Materials
-static shared_ptr<Material> g_goldDiffuseMat, g_blueDiffuseMat, g_arrowDiffuseMat,
-    g_bumpFloorMat, g_arcballMat, g_pickingMat, g_lightMat, g_transMat;
-static const Cvec3f gold = Cvec3f(165./255, 124./255, 0./255), blue = Cvec3f(1./255, 1./255, 136./255),
-    red = Cvec3f(179./255, 33./255, 19./255);
+static shared_ptr<Material> g_goldDiffuseMat,
+                            g_blueDiffuseMat,
+                            g_bumpFloorMat,
+                            g_arcballMat,
+                            g_pickingMat,
+                            g_lightMat,
+                            g_transMat;
 
 shared_ptr<Material> g_overridingMaterial;
 static vector<shared_ptr<Material>> g_bunnyShellMats; // for bunny shells
 
 // --------- Scene nodes
-static shared_ptr<SgTransformNode> g_world, g_groundNode, g_activeEyeNode, g_screenNode, g_arrowEyeNode; 
+static shared_ptr<SgTransformNode> g_world, g_groundNode, g_activeEyeNode, g_screenNode, 
+    g_arrowEyeNode, g_arrowEyeNode2; 
 static shared_ptr<SgRbtNode> g_skyNode, g_arrowNode, g_light1Node, g_light2Node, g_currentPickedRbtNode;
 static list<shared_ptr<SgRbtNode>> g_balloonNodes;
 static vector<Cvec3> g_balloonVelocity; // in world coordinates
@@ -128,24 +132,26 @@ static double g_numStepsPerFrame = 10;
 static int g_scorePerPop = 10;
 static int g_currScore = 0;
 
-static float g_arrowWidth = .3;
-static float g_arrowWidthMax = g_roomDepth*.03, g_arrowWidthMin = 0.1;
-static float g_arrowLength = g_arrowWidth*10;
+static float g_arrowWidth = .15;
+static float g_arrowWidthMax = g_roomDepth*.03, g_arrowWidthMin = 0.05;
+static float g_arrowLength = g_arrowWidth*20;
 static Cvec3 g_arrowVelocity(0,0,0);
 static bool g_arrowLock = false;
-static bool g_arrowSetPower = false;
-static float g_arrowPower = 0.0;
+static bool g_arrowSetLaunchVelocity = false;
+static float g_arrowLaunchVelocity = 0.0;
 
 static float g_balloonRadius = 2.0;
 static bool g_balloonMoving = false;
 static float g_balloonVelocityScale = 5.0;
-static const float g_balloonVelocityMin = 0.1, g_balloonVelocityMax = min(60.0, g_roomMinDim/g_timeStep);
+static const float g_balloonSpeedMin = 0.1, g_balloonSpeedMax = min(60.0, g_roomMinDim/g_timeStep);
 static const float g_incrementRatio = 1.2;
 
 
 
 ///////////////// END OF G L O B A L S
 /////////////////////////////////////////////////////
+
+// ------- Helper functions
 
 static void initGround() {
     int ibLen, vbLen;
@@ -214,94 +220,14 @@ static Cvec3 getBasis(Quat q, int i) {
   return quatToMatrix(q).getBasis(i);
 }
 
-static list<shared_ptr<SgRbtNode>>::iterator popBalloon(
-    list<shared_ptr<SgRbtNode>>::iterator balloon,
-    vector<Cvec3>::iterator balloonVelocity) {
-    g_world->removeChild(*balloon);
-    g_currScore += g_scorePerPop;
-    cout << "Pop! Current score " << g_currScore << endl;
-    g_balloonVelocity.erase(balloonVelocity);
-    return g_balloonNodes.erase(balloon);
+static double randomRange(float lo = -1.0, float hi = 1.0) {
+    return(static_cast <double> (lo + (hi-lo) * rand()/RAND_MAX));
 }
 
-static bool hitWall(Cvec3 p, double tol = g_arrowWidth/2) {
-    return ((p[0] < -g_roomWidth + tol) || (p[0] > g_roomWidth - tol) 
-        || (p[1] < g_groundY + tol) || (p[1] > g_ceilY - tol) 
-        || (p[2] < -g_roomDepth + tol) || (p[2] > g_roomDepth - tol) );
-}
-
-static void rescaleArrow() {
-    g_arrowNode->clearChild();
-    g_arrowLength = g_arrowWidth * 10;
-    g_arrowNode->addChild(shared_ptr<MyShapeNode>(
-        new MyShapeNode(g_cube, g_blueDiffuseMat, Cvec3(0, 0, 0), Cvec3(0,0,0), 
-            Cvec3(g_arrowWidth/2, g_arrowWidth/2, g_arrowLength))));
-    g_arrowNode->addChild(shared_ptr<MyShapeNode>(
-        new MyShapeNode(g_sphere, g_blueDiffuseMat, Cvec3(0, 0, -g_arrowLength/2), Cvec3(0,0,0), 
-            Cvec3(g_arrowWidth/2, g_arrowWidth/2, g_arrowWidth/2))));
-    g_arrowEyeNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0,g_arrowWidth/2,-g_arrowLength/2))));
-    g_arrowNode->addChild(g_arrowEyeNode);
-}
-
-static void resetScene() {
-    if (g_arrowEyeNode) {
-        g_arrowNode->removeChild(g_arrowEyeNode);
-        g_world->removeChild(g_skyNode);
-        g_world->removeChild(g_arrowNode);
-    }
-    g_skyNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0, (g_ceilY+g_groundY)/2, g_roomDepth-g_movementBuffer))));
-    g_activeEyeNode = g_skyNode;
-    g_arrowNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0, (g_ceilY+g_groundY)/2, (g_lineZ + g_roomDepth)/2),
-        Quat(cos(0/8),Cvec3(0,1,0)*sin(0/8)))));
-    rescaleArrow();
-
-    g_world->addChild(g_arrowNode);
-    g_world->addChild(g_skyNode);
-    g_arrowVelocity = Cvec3(0,0,0);
-    g_arrowLock = false;
-    g_arrowPower = 0.0;
-}
-
-static void updateArrow() {
-    if (norm(g_arrowVelocity) < CS175_EPS)
-        return;
-    RigTForm worldToArrow = getPathAccumRbt(g_world, g_arrowNode, 1);
-    RigTForm L = getPathAccumRbt(g_world, g_arrowNode);
-    Cvec3 p = coordConvert(L.getTranslation(), worldToArrow); // arrow COM location in world coordinates
-    p = p + g_arrowVelocity * g_timeStep;
-    float theta = angleBetween(g_arrowVelocity, g_arrowVelocity + g_gravity * g_timeStep);
-    Cvec3 k = coordConvert(Cvec3(-g_arrowVelocity[2],0,g_arrowVelocity[0]), L, false, 0);
-    if (theta > CS175_EPS) {
-        k.normalize();
-    } else {
-        theta = 0;
-        k = Cvec3(1,0,0);
-    }
-    g_arrowVelocity = g_arrowVelocity + g_gravity * g_timeStep;
-    g_arrowNode->setRbt(RigTForm(coordConvert(p, worldToArrow, false), 
-        inv(worldToArrow.getRotation())*L.getRotation()*Quat(cos(theta/2),k*sin(-theta/2))));
-    g_world->removeChild(g_groundNode);
-    g_world->addChild(g_groundNode);
-    L = getPathAccumRbt(g_world, g_arrowNode);
-    Cvec3 s = coordConvert(Cvec3(0,0,-g_arrowLength/2), L); // arrow tip location in world coordinates
-    // Verify that veloc vector = arrow vector in direction
-    // cout << "veloc vector "; printCvec3(g_arrowVelocity/norm(g_arrowVelocity));
-    // cout << "arrow vector "; printCvec3(s-p);
-    auto it2 = g_balloonVelocity.begin();
-    for(auto it = g_balloonNodes.begin(), end = g_balloonNodes.end(); it != end; it++) {
-        if (norm2(s - ((*it)->getRbt()).getTranslation()) < g_balloonRadius*g_balloonRadius) {
-            it = popBalloon(it, it2);
-        }
-        it2++;
-    }
-    s += g_arrowVelocity * g_timeStep;
-    if (hitWall(s)) {
-        cout << "Arrow hits wall. Your total is "<< g_currScore << endl;
-        cout << "Resetting arrow in 3s..." << endl;
-        sleep(3);
-        resetScene();
-    }
-    
+static Cvec3 randomCvec3(float scale=1.0) {
+    float theta = randomRange(0,CS175_PI);
+    float phi = randomRange(0,CS175_PI*2);
+    return Cvec3(sin(theta)*cos(phi), sin(theta)*sin(phi), cos(theta))*scale;
 }
 
 // takes a projection matrix and send to the the shaders
@@ -332,10 +258,13 @@ static void updateActiveEye() {
     cout << "Active eye is ";
     if (g_activeEyeNode == g_skyNode) {
         g_activeEyeNode = g_arrowEyeNode;
-        cout << "Arrow" << endl;
+        cout << "tip of arrow" << endl;
     } else if (g_activeEyeNode == g_arrowEyeNode) {
+        g_activeEyeNode = g_arrowEyeNode2;
+        cout << "straddled on arrow" << endl;
+    } else if (g_activeEyeNode == g_arrowEyeNode2) {
         g_activeEyeNode = g_skyNode;
-        cout << "Sky" << endl;
+        cout << "sky" << endl;
     }
 }
 
@@ -343,16 +272,103 @@ static RigTForm getEyeRbt() {
     return (getPathAccumRbt(g_world, g_activeEyeNode));
 }
 
+
 // -------- Game
 
-static double randomRange(float lo = -1.0, float hi = 1.0) {
-    return(static_cast <double> (lo + (hi-lo) * rand()/RAND_MAX));
+static list<shared_ptr<SgRbtNode>>::iterator popBalloon(
+    list<shared_ptr<SgRbtNode>>::iterator balloon,
+    vector<Cvec3>::iterator balloonVelocity) {
+    g_world->removeChild(*balloon);
+    g_currScore += g_scorePerPop;
+    cout << "Pop! Current score " << g_currScore << endl;
+    g_balloonVelocity.erase(balloonVelocity);
+    return g_balloonNodes.erase(balloon);
 }
 
-static Cvec3 randomCvec3(float scale=1.0) {
-    float theta = randomRange(0,CS175_PI);
-    float phi = randomRange(0,CS175_PI*2);
-    return Cvec3(sin(theta)*cos(phi), sin(theta)*sin(phi), cos(theta))*scale;
+static bool hitWall(Cvec3 p, double tol = g_arrowWidth) {
+    return ((p[0] < -g_roomWidth + tol) || (p[0] > g_roomWidth - tol) 
+        || (p[1] < g_groundY + tol) || (p[1] > g_ceilY - tol) 
+        || (p[2] < -g_roomDepth + tol) || (p[2] > g_roomDepth - tol) );
+}
+
+static void rescaleArrow(bool arrowPicked = false) {
+    g_arrowNode->clearChild();
+    g_arrowLength = g_arrowWidth * 20;
+    g_arrowNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_cube, g_blueDiffuseMat, Cvec3(0, 0, 0), Cvec3(0,0,0), 
+            Cvec3(g_arrowWidth, g_arrowWidth, g_arrowLength))));
+    g_arrowNode->addChild(shared_ptr<MyShapeNode>(
+        new MyShapeNode(g_sphere, g_blueDiffuseMat, Cvec3(0, 0, -g_arrowLength/2), Cvec3(0,0,0), 
+            Cvec3(g_arrowWidth, g_arrowWidth, g_arrowWidth))));
+    g_arrowEyeNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0,0.0,-g_arrowWidth-g_arrowLength/2))));
+    g_arrowEyeNode2.reset(new SgRbtNode(RigTForm(Cvec3(0.0,g_arrowWidth,0))));
+    g_arrowNode->addChild(g_arrowEyeNode);
+    g_arrowNode->addChild(g_arrowEyeNode2);
+    if (arrowPicked) {
+        g_currentPickedRbtNode = g_arrowNode;
+    }
+}
+
+static void resetScene() {
+    if (g_arrowEyeNode) {
+        g_arrowNode->removeChild(g_arrowEyeNode);
+        g_world->removeChild(g_skyNode);
+        g_world->removeChild(g_arrowNode);
+    }
+    g_skyNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0, (g_ceilY+g_groundY)/2, g_roomDepth-g_movementBuffer))));
+    g_activeEyeNode = g_skyNode;
+    bool arrowPicked = (g_currentPickedRbtNode) && (g_currentPickedRbtNode == g_arrowNode);
+    g_arrowNode.reset(new SgRbtNode(RigTForm(Cvec3(0.0, (g_ceilY+2*g_groundY)/3, (g_lineZ + g_roomDepth)/2),
+        Quat(cos(0/8),Cvec3(0,1,0)*sin(0/8)))));
+    rescaleArrow(arrowPicked);
+
+    g_world->addChild(g_arrowNode);
+    g_world->addChild(g_skyNode);
+    g_arrowVelocity = Cvec3(0,0,0);
+    g_arrowLock = false;
+    g_arrowLaunchVelocity = 0.0;
+}
+
+static void updateArrow() {
+    if (norm(g_arrowVelocity) < CS175_EPS)
+        return;
+    RigTForm worldToArrow = getPathAccumRbt(g_world, g_arrowNode, 1);
+    RigTForm L = getPathAccumRbt(g_world, g_arrowNode);
+    Cvec3 p = coordConvert(L.getTranslation(), worldToArrow); // arrow COM location in world coordinates
+    p = p + g_arrowVelocity * g_timeStep;
+    float theta = angleBetween(g_arrowVelocity, g_arrowVelocity + g_gravity * g_timeStep);
+    Cvec3 k = coordConvert(Cvec3(-g_arrowVelocity[2],0,g_arrowVelocity[0]), L, false, 0);
+    if (theta > CS175_EPS) {
+        k.normalize();
+    } else {
+        theta = 0;
+        k = Cvec3(1,0,0);
+    }
+    g_arrowVelocity = g_arrowVelocity + g_gravity * g_timeStep;
+    g_arrowNode->setRbt(RigTForm(coordConvert(p, worldToArrow, false), 
+        inv(worldToArrow.getRotation())*L.getRotation()*Quat(cos(theta/2),k*sin(-theta/2))));
+    g_world->removeChild(g_groundNode);
+    g_world->addChild(g_groundNode);
+    L = getPathAccumRbt(g_world, g_arrowNode);
+    Cvec3 s = coordConvert(Cvec3(0,0,-g_arrowLength/2), L); // arrow tip location in world coordinates
+    // Verify that veloc vector = arrow vector in direction
+    // cout << "veloc vector "; printCvec3(g_arrowVelocity/norm(g_arrowVelocity));
+    // cout << "arrow vector "; printCvec3(s-p);
+    auto it2 = g_balloonVelocity.begin();
+    for(auto it = g_balloonNodes.begin(), end = g_balloonNodes.end(); it != end; it++) {
+        if (norm2(s - ((*it)->getRbt()).getTranslation()) < (g_balloonRadius+g_arrowWidth)*(g_balloonRadius+g_arrowWidth)) {
+            it = popBalloon(it, it2);
+        }
+        it2++;
+    }
+    s += g_arrowVelocity * g_timeStep;
+    if (hitWall(s)) {
+        cout << "Arrow hits wall. Your total is "<< g_currScore << endl;
+        cout << "Resetting arrow in 3s..." << endl;
+        sleep(3);
+        resetScene();
+    }
+    
 }
 
 static void generateBalloon(int n = 1, bool randomLoc = true) {
@@ -433,7 +449,6 @@ static void updateBalloons() {
 static Cvec3 getArcballCenter() {
     RigTForm pickedRbt = (g_currentPickedRbtNode) ? getPathAccumRbt(g_world, g_currentPickedRbtNode) : RigTForm();
     Cvec3 center = (inv(getEyeRbt()) * pickedRbt).getTranslation(); 
-    //cout << center[0] << " " << center[1] << " " << center[2] << endl; cout.flush();
     return center;
 }
 
@@ -469,7 +484,7 @@ static void drawStuff(bool picking = false) {
         g_world->accept(drawer);
 
         // draw spheres
-        if (g_currentPickedRbtNode && !g_arrowSetPower)  {
+        if (g_currentPickedRbtNode && !g_arrowSetLaunchVelocity)  {
             Matrix4 MVM = rigTFormToMatrix(invEyeRbt * getPathAccumRbt(g_world, g_currentPickedRbtNode));
             MVM = MVM * Matrix4::makeScale(Cvec3(g_arcballScale * g_arcballScreenRadius));
             Matrix4 NMVM = normalMatrix(MVM);
@@ -561,10 +576,6 @@ static void updateWHScale() {
     glfwGetFramebufferSize(g_window, &pixel_width, &pixel_height);
     g_wScale = pixel_width / screen_width;
     g_hScale = pixel_height / screen_height;
-    cout << g_wScale << " " << g_hScale << endl;
-
-    // cout << screen_width << " " << screen_height << endl;
-    // cout << pixel_width << " " << pixel_width << endl;
 }
 
 static void display() {
@@ -630,8 +641,8 @@ static void motion(GLFWwindow *window, double x, double y) {
     const RigTForm m = getM(dx, dy);
     if (g_mouseClickDown) {
         if (g_currentPickedRbtNode) { // manipulate object 
-            if (g_arrowSetPower) {
-                g_arrowPower = max(0.0, g_arrowPower -dy*.01);
+            if (g_arrowSetLaunchVelocity) {
+                g_arrowLaunchVelocity = min(max(0.0, g_arrowLaunchVelocity+dy*.01), (double)g_balloonSpeedMax);
             } else {
                 RigTForm L = g_currentPickedRbtNode -> getRbt();
                 RigTForm CL1 = getPathAccumRbt(g_world,g_currentPickedRbtNode, 1);
@@ -651,7 +662,7 @@ static void motion(GLFWwindow *window, double x, double y) {
                 }
                 Cvec3 t = (CL1 * L).getTranslation();
                 limitMotion(L, CL1, (g_currentPickedRbtNode == g_arrowNode) ? 
-                    g_arrowLength : g_movementBuffer, g_lineZ);
+                    g_arrowLength/2 : g_movementBuffer, g_lineZ);
                 g_currentPickedRbtNode -> setRbt(L);
             }
         } else { // manipulate sky
@@ -715,10 +726,10 @@ static void keyboard(GLFWwindow* window, int key, int scancode, int action, int 
             cout << " ============== H E L P ==============\n\n"
                  << "h\t\thelp menu\n"
                  << "s\t\tsave screenshot\n"
-                 << "f\t\tToggle flat shading on/off.\n"
-                 << "o\t\tCycle object to edit\n"
                  << "v\t\tCycle view\n"
                  << "drag left mouse to rotate\n"
+                 << "drag right mouse to translate\n"
+                 << "see appendix in report.pdf for more\n"
                  << endl;
             break;
         case GLFW_KEY_S: 
@@ -742,7 +753,7 @@ static void keyboard(GLFWwindow* window, int key, int scancode, int action, int 
             cout << " frame" << endl;
             break;
         case GLFW_KEY_P:
-            if (g_arrowSetPower) {
+            if (g_arrowSetLaunchVelocity) {
                 cout << "Picking mode unavailable when setting arrow power" << endl;
             } else {
                 g_pickingMode = true;
@@ -758,21 +769,24 @@ static void keyboard(GLFWwindow* window, int key, int scancode, int action, int 
             cout << "New balloons generated. # Balloons = " << g_balloonNodes.size() << endl;
             break;
         case GLFW_KEY_R:
-            resetScene();
+            if (g_arrowLock) {
+                cout << "Cannot reset when arrow in motion." << endl;
+            } else 
+                resetScene();
             cout << "Arrow and sky node reset." << endl;
             break;
         case GLFW_KEY_L:
-            cout << "Prepare for launch! Drag down to boost launch power, or drag up to reduce it." << endl;
-            g_arrowPower = 0.0;
+            cout << "Prepare for launch! Drag up to boost launch power, or drag down to reduce it." << endl;
+            g_arrowLaunchVelocity = 0.0;
             g_arrowLock = true;
-            g_arrowSetPower = true;
+            g_arrowSetLaunchVelocity = true;
             g_currentPickedRbtNode = g_arrowNode;
             break;
         case GLFW_KEY_A:
-            if (g_arrowPower > CS175_EPS) {
+            if (g_arrowLaunchVelocity > CS175_EPS) {
                 cout << "... and arrow launched! Let's see how this one goes" << endl;
-                g_arrowVelocity = -rigTFormToMatrix(getPathAccumRbt(g_world,g_arrowNode)).getBasis(2).normalize()*g_arrowPower;
-                g_arrowSetPower = false;
+                g_arrowVelocity = -rigTFormToMatrix(getPathAccumRbt(g_world,g_arrowNode)).getBasis(2).normalize()*g_arrowLaunchVelocity;
+                g_arrowSetLaunchVelocity = false;
                 g_currentPickedRbtNode = shared_ptr<SgRbtNode>();
             } else {
                 cout << "Your arrow has no power. Press [L] and drag to adjust power" << endl;
@@ -797,14 +811,14 @@ static void keyboard(GLFWwindow* window, int key, int scancode, int action, int 
                 cout << "Min balloon size reached" << endl;
             break;
         case GLFW_KEY_RIGHT:
-            if (g_balloonVelocityScale*g_incrementRatio < g_balloonVelocityMax) {
+            if (g_balloonVelocityScale*g_incrementRatio < g_balloonSpeedMax) {
                 g_balloonVelocityScale *= g_incrementRatio;
                 cout << "Balloon velocity: " << g_balloonVelocityScale << endl;
             } else
                 cout << "Max balloon velocity reached" << endl;
             break;
         case GLFW_KEY_LEFT:
-            if (g_balloonVelocityScale > g_balloonVelocityMin*g_incrementRatio) {
+            if (g_balloonVelocityScale > g_balloonSpeedMin*g_incrementRatio) {
                 g_balloonVelocityScale /= g_incrementRatio;
                 cout << "Balloon velocity: " << g_balloonVelocityScale << endl;
             } else
@@ -826,204 +840,11 @@ static void keyboard(GLFWwindow* window, int key, int scancode, int action, int 
             } else
                 cout << "Min arrow width reached" << endl;
             break;
-        /*case GLFW_KEY_C:
-            if (g_playingAnimation)
-                cout << "Cannot operate when playing animation" << endl;
-            else if (g_keyFrames.empty()) {
-                cout << "No key frame defined" << endl;
-            } else {
-                cout << "Loading current key frame [" << g_currentKeyFrameNumber << "] to scene graph" << endl;
-                loadFrame();
+        case GLFW_KEY_Q:
+            if (g_arrowSetLaunchVelocity) {
+                cout << "Current arrow launch velocity: " << g_arrowLaunchVelocity << endl;
             }
             break;
-        case GLFW_KEY_N:
-            if (g_playingAnimation)
-                cout << "Cannot operate when playing animation" << endl;
-            else {
-                createFrame();
-            }
-            break;
-        case GLFW_KEY_U:
-            if (g_playingAnimation) {
-                cout << "Cannot operate when playing animation" << endl;
-                break;
-            }
-            if (!g_keyFrames.empty()) {
-                loadFrame(false);
-            } else {
-                createFrame();
-            }
-            cout << "Copying scene graph to current frame [" << g_currentKeyFrameNumber << "]" << endl;
-            break;
-        case GLFW_KEY_D:
-            if (g_playingAnimation) {
-                cout << "Cannot operate when playing animation" << endl;
-                break;
-            }
-            if (g_keyFrames.empty()) {
-                cout << "Frame list is now EMPTY" << endl;
-                break;
-            }
-            cout << "Deleting current frame [" << g_currentKeyFrameNumber << "]" << endl;
-            g_currentKeyFrame = g_keyFrames.erase(g_currentKeyFrame);
-            if (g_currentKeyFrameNumber > 0) {
-                g_currentKeyFrame--;
-                g_currentKeyFrameNumber--;
-            }
-            if (g_keyFrames.empty()) {
-                cout << "No frames defined" << endl;
-                g_currentKeyFrameNumber = -1;
-            } else {
-                loadFrame();
-                cout << "Now at frame [" << g_currentKeyFrameNumber << "]" << endl;
-            }
-            break;
-        case GLFW_KEY_W:
-            g_oFrameFile.open(g_frameFileName);
-            cout << "Writing animation to " << g_frameFileName << endl;
-            g_oFrameFile << g_keyFrames.size() << " " << g_currentKeyFrame->size() << endl;
-            for(list<vector<RigTForm>>::iterator it = g_keyFrames.begin(), end = g_keyFrames.end();
-                it != end; it++) {
-                for(vector<RigTForm>::iterator it1 = it->begin(), end1 = it->end();
-                    it1 != end1; it1++) {
-                    Cvec3 t = it1->getTranslation();
-                    Quat q = it1->getRotation();
-                    for(int i = 0; i < 3; i++) {
-                        g_oFrameFile << t[i] << " ";
-                    }
-                    g_oFrameFile << endl;
-                    for(int i = 0; i < 4; i++) {
-                        g_oFrameFile << q[i] << " ";
-                    }
-                    g_oFrameFile << endl;
-                }
-            }
-            g_oFrameFile.close();
-            break;
-        case GLFW_KEY_I:
-            if (g_playingAnimation) {
-                cout << "Cannot operate when playing animation" << endl;
-                break;
-            }
-            g_iFrameFile.open(g_frameFileName);
-            if (g_iFrameFile.fail()) {
-                cerr << "Exception caught: Cannot load " << g_frameFileName << endl;
-                exit(0);
-            }
-            cout << "Reading animation from " << g_frameFileName << endl;
-            int numFrames, numNodes;
-            if (!(g_iFrameFile >> numFrames >> numNodes)) {
-                cerr << "Incorrect frame input format! Must start with number of frames." << endl;
-                break;
-            } else if (numNodes != g_rbtNodes.size()) {
-                cerr << "Number of Rbt per frame in " << g_frameFileName << " does not match number of SgRbtNodes in the current scene graph." << endl;
-                numNodes = g_rbtNodes.size();
-            }
-            g_keyFrames.clear();
-            cout << numFrames << " frames read." << endl;
-            if (numFrames > 0) {
-                for(int i = 0; i < numFrames; i++) {
-                    vector<RigTForm> tempRbts;
-                    for(int j = 0; j < numNodes; j++) {
-                        RigTForm temp;
-                        Cvec3 t, v;
-                        double w;
-                        for(int i = 0; i < 3; i++) {
-                            g_iFrameFile >> t[i];
-                        }
-                        g_iFrameFile >> w;
-                        for(int i = 0; i < 3; i++) {
-                            g_iFrameFile >> v[i];
-                        }
-                        temp.setTranslation(t);
-                        temp.setRotation(Quat(w,v));
-                        tempRbts.push_back(temp);
-                    }
-                    g_keyFrames.push_back(tempRbts);
-                }
-                g_currentKeyFrameNumber = 0;
-                cout << "Now at frame [" << g_currentKeyFrameNumber << "]" << endl;
-                g_currentKeyFrame = g_keyFrames.begin();
-                loadFrame();
-            } else {
-                g_currentKeyFrameNumber = -1;
-                g_currentKeyFrame = g_keyFrames.begin();
-            }
-            g_iFrameFile.close();
-            break;
-        case GLFW_KEY_Y:
-            if (g_playingAnimation) {
-                endAnimation();
-            } else if (g_keyFrames.size() > 3) {
-                g_playingAnimation = true;
-                g_currentKeyFrame = g_keyFrames.begin();g_currentKeyFrame++; 
-                g_currentKeyFrameNumber = 1;
-                cout << "Playing animation..." << endl;
-            } else {
-                cerr << "Cannot play animation with less than 4 keyframes." << endl;
-            }
-            break;
-        case GLFW_KEY_PERIOD: // >
-            if (!(mods & GLFW_MOD_SHIFT)) break;
-            if (g_playingAnimation) {
-                cout << "Cannot operate when playing animation" << endl;
-                break;
-            }
-            g_currentKeyFrame++;
-            if (g_currentKeyFrame != g_keyFrames.end()) {
-                g_currentKeyFrameNumber += 1;
-                cout << "Stepped forward to frame [" << g_currentKeyFrameNumber << "]" << endl;
-                loadFrame();
-            } else {
-                g_currentKeyFrame--;
-            }
-            break;
-        case GLFW_KEY_COMMA: // <
-            if (!(mods & GLFW_MOD_SHIFT)) break;
-            if (g_playingAnimation) {
-                cout << "Cannot operate when playing animation" << endl;
-                break;
-            }
-            if (g_currentKeyFrame != g_keyFrames.begin()) {
-                g_currentKeyFrame--;
-                g_currentKeyFrameNumber -= 1;
-                cout << "Stepped backward to frame [" << g_currentKeyFrameNumber << "]" << endl;
-                loadFrame();
-            }
-            break;
-        case GLFW_KEY_EQUAL: // <
-            if (!(mods & GLFW_MOD_SHIFT)) break;
-            if (g_msBetweenKeyFrames > g_msBetweenKeyFramesMin) {
-                g_msBetweenKeyFrames -= g_msBetweenKeyFramesInc;
-            }
-            cout << g_msBetweenKeyFrames << " ms between keyframs." << endl;
-            break;
-        case GLFW_KEY_MINUS: // <
-            if (g_msBetweenKeyFrames < g_msBetweenKeyFramesMax) {
-                g_msBetweenKeyFrames += g_msBetweenKeyFramesInc;
-            }
-            cout << g_msBetweenKeyFrames << " ms between keyframs." << endl;
-            break;
-        case GLFW_KEY_RIGHT:
-            g_furHeight *= 1.05;
-            cerr << "fur height = " << g_furHeight << std::endl;
-            updateShellGeometry();
-            break;
-        case GLFW_KEY_LEFT:
-            g_furHeight /= 1.05;
-            std::cerr << "fur height = " << g_furHeight << std::endl;
-            updateShellGeometry();
-            break;
-        case GLFW_KEY_UP:
-            g_hairyness *= 1.05;
-            cerr << "hairyness = " << g_hairyness << std::endl;
-            updateShellGeometry();
-            break;
-        case GLFW_KEY_DOWN:
-            g_hairyness /= 1.05;
-            cerr << "hairyness = " << g_hairyness << std::endl;
-            updateShellGeometry();
-            break;*/
         }
     } else {
         switch (key) {
@@ -1156,10 +977,7 @@ static void initScene() {
     g_light2Node.reset(new SgRbtNode(RigTForm(Cvec3(g_roomWidth-g_movementBuffer, g_ceilY-g_movementBuffer, g_lineZ+g_movementBuffer))));
     g_light2Node->addChild(shared_ptr<MyShapeNode>(
                                new MyShapeNode(g_sphere, g_lightMat, Cvec3(0, 0, 0))));
-    // g_balloonNode.reset(new SgRbtNode(RigTForm(Cvec3(0,0,0))));
-    // g_balloonNode->addChild(shared_ptr<MyShapeNode>(new MyShapeNode(g_sphere, g_goldDiffuseMat, Cvec3(0, 0, 0))));
-    
-    // g_world->addChild(g_balloonNode);
+
     g_world->addChild(g_light1Node);
     g_world->addChild(g_light2Node);
     g_world->addChild(g_groundNode);
